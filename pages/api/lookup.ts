@@ -87,6 +87,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           const m = t.match(/([A-Z][\w.'’-]+(?:\s+[A-Z][\w.'’-]+){1,3})\n/);
           if (m) name = m[1];
         }
+        if (!name) continue; // name unresolvable → not a person card; never return null names
         const headline = textOf(card?.querySelector(".entity-result__primary-subtitle, .subline-level-1, [data-field='current_position']") ?? null);
         const location = textOf(card?.querySelector(".entity-result__secondary-subtitle, .subline-level-2, [data-field='location']") ?? null);
         const location0 = textOf(card?.querySelector(".entity-result__secondary-subtitle, .subline-level-2") ?? null);
