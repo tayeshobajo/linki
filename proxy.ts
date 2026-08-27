@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
+import { ttAdapter } from "./middleware/tt-adapter";
 
 // Routes that manage their own complete auth flow and must not be pre-empted by a
 // generic 401 here — every one of them either issues/discovers credentials (not a
@@ -24,6 +25,13 @@ const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/oauth/", "/api/mcp"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+
+  // Trust Tai hardened adapter surface: gated before anything else, incl. session auth.
+  if (pathname.startsWith("/api/tt/")) {
+    const gate = await Promise.resolve(ttAdapter(req as unknown as Request));
+    if (gate) return gate as NextResponse;
+    return NextResponse.next();
+  }
 
   if (!pathname.startsWith("/api/")) return NextResponse.next();
   if (PUBLIC_API_PREFIXES.some(p => pathname.startsWith(p))) return NextResponse.next();
