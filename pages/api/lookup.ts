@@ -2,12 +2,14 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { getSessionPage } from "@/lib/linkedin/session";
 import { resolveAnyAuthenticatedAccount } from "@/lib/linkedin/resolve-account";
+import { MAX_CANDIDATES, MAX_PAGES, parsePages, dedupeCandidates } from "@/lib/tt/params";
 
 // POST /api/lookup — flagship (non-Sales-Nav) people search for Trust Tai's
 // "find contact route" NextMoveAction. Search keyword → parse result cards →
 // return candidate {linkedin_url, full_name, headline, location, degree, company}.
-// Read-only on LinkedIn: one search page load per call, no pagination, no
-// profile visits. Results are NEVER auto-written — caller owns matching.
+// Read-only on LinkedIn: 1-3 search page loads per call (optional `pages` param,
+// default 1), no profile visits. Results are NEVER auto-written — caller owns
+// matching.
 //
 // Trust Tai integration brief §9 sanctioned a Sales-Nav intercept adapter, but
 // the account has no Sales Nav (verified 2026-08-24: /sales/ → premium upsell
@@ -39,13 +41,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!keywords || keywords.length < 2) return res.status(400).json({ error: "keywords required (min 2 chars)" });
   if (keywords.length > 200) return res.status(400).json({ error: "keywords too long (max 200)" });
 
+  const pages = parsePages(req.body?.pages);
+  if (pages === null) return res.status(400).json({ error: `pages must be an integer 1-${MAX_PAGES}` });
+
   const db = getDb();
   const account = resolveAnyAuthenticatedAccount(db, req.body?.account_id);
   if (!account) return res.status(400).json({ error: "No authenticated LinkedIn account could be resolved." });
 
   const page = await getSessionPage(account.id);
   try {
-    await page.goto(SEARCH_URL(keywords), { waitUntil: "domcontentloaded", timeout: 30000 });
+    // ── Page loop: search results pagination ──
+    // One page load per requested page (1-3), humanized gap between loads.
+    // Candidates are merged across pages and deduped by /in/ URL below.
+    const allCandidates: LookupCandidate[] = [];
+    let resultCount: string | null = null;
+    for (let pageNum = 1; pageNum <= pages; pageNum += 1) {
+    await page.goto(SEARCH_URL(keywords) + (pageNum > 1 ? `&page=${pageNum}` : ""), { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(4000);
     // Wait for result content; tolerate absence (zero results) without failing.
     try {
@@ -64,9 +75,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       bodyStart: document.body.innerText.slice(0, 200),
     })).catch(() => ({ url: "", inAnchors: 0, legacyCards: 0, bodyStart: "" }));
     console.log("[lookup:debug]", JSON.stringify(debug));
-    const resultCount = (typeof debug.bodyStart === "string" ? debug.bodyStart : "").match(/([\d.,]+)\s+results?/i)?.[1]?.replace(/[.,]/g, "") ?? null;
+    resultCount = (typeof debug.bodyStart === "string" ? debug.bodyStart : "").match(/([\d.,]+)\s+results?/i)?.[1]?.replace(/[.,]/g, "") ?? null;
 
-    const candidates: LookupCandidate[] = await page.evaluate(() => {
+    const pageCandidates: LookupCandidate[] = await page.evaluate(() => {
       const out: LookupCandidate[] = [];
       const seen = new Set<string>();
 
@@ -181,11 +192,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return out;
     }).catch(() => [] as LookupCandidate[]);
 
+      // Per-page cap (10) preserves the original single-page response cap
+      // semantics; total stays capped at MAX_CANDIDATES (25) post-dedupe.
+      allCandidates.push(...pageCandidates.slice(0, 10));
+
+      // Early exit: no need to load further pages when we've hit the cap
+      // or the page yielded nothing (last page / zero results).
+      if (allCandidates.length >= MAX_CANDIDATES || pageCandidates.length === 0) break;
+
+      // Humanized gap between search-page loads (session teardown gap already
+      // serializes page reuse; this adds inter-navigation pacing).
+      if (pageNum < pages) await page.waitForTimeout(2000 + Math.random() * 1500);
+    }
+
+    // Merge-dedupe by linkedin_url, keep first occurrence (earliest page +
+    // highest rank wins), cap total at MAX_CANDIDATES.
+    const candidates = dedupeCandidates(allCandidates);
+
     return res.json({
       account_id: account.id,
       keywords,
       result_count: resultCount ? parseInt(resultCount, 10) : null,
-      candidates: candidates.slice(0, 10),
+      candidates,
       provider: "linki-flagship-search",
     });
   } catch (err) {

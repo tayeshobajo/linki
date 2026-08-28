@@ -1,21 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from "next";
+import { validateEnrichUrls, MAX_ENRICH_URLS } from "@/lib/tt/params";
 
 const seenKeys = new Map<string, number>();
 const REPLAY_WINDOW_MS = 15 * 60 * 1000;
 
-/** Trust Tai adapter lookup: strict-schema passthrough to internal /api/lookup. */
+/** Trust Tai adapter enrich: strict-schema passthrough to internal /api/enrich. */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "method not allowed" });
 
-  const { keywords, limit, pages, idempotency_key } = req.body || {};
+  const { urls: urls_raw, idempotency_key } = req.body || {};
   const now = Date.now();
 
-  if (typeof keywords !== "string" || keywords.length < 2 || keywords.length > 120)
-    return res.status(400).json({ error: "invalid keywords" });
-  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 25))
-    return res.status(400).json({ error: "invalid limit" });
-  if (pages !== undefined && (!Number.isInteger(pages) || pages < 1 || pages > 3))
-    return res.status(400).json({ error: "invalid pages" });
+  const urls = validateEnrichUrls(urls_raw);
+  if (!urls) return res.status(400).json({ error: `urls must be an array of 1-${MAX_ENRICH_URLS} flagship /in/ URLs` });
   if (idempotency_key !== undefined && (typeof idempotency_key !== "string" || idempotency_key.length > 200))
     return res.status(400).json({ error: "invalid idempotency_key" });
 
@@ -27,10 +24,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const base = process.env.LINKI_INTERNAL_URL || "http://127.0.0.1:3456";
   try {
-    const r = await fetch(base + "/api/lookup", {
+    const r = await fetch(base + "/api/enrich", {
       method: "POST",
       headers: { "content-type": "application/json", "x-internal-secret": process.env.INTERNAL_API_SECRET || "" },
-      body: JSON.stringify({ keywords, ...(limit ? { limit } : {}), ...(pages ? { pages } : {}) }),
+      body: JSON.stringify({ urls }),
     });
     const data = await r.json().catch(() => ({}));
     return res.status(r.status).json(data);

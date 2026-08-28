@@ -63,5 +63,11 @@ export function ttAdapter(req: Request): Response | null {
     return null; // pass through to pages/api/tt/lookup.ts
   }
 
+  if (route === 'enrich') {
+    if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+    // body schema validated inside the route handler (needs parsed json)
+    return null; // pass through to pages/api/tt/enrich.ts
+  }
+
   return new Response('not found', { status: 404 });
 }
