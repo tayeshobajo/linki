@@ -12,9 +12,45 @@ export const MAX_PAGES = 3;
 export const MAX_CANDIDATES = 25;
 /** Max profile URLs per enrich request. */
 export const MAX_ENRICH_URLS = 5;
+/** Hard cap on nav-first enrich: profile visits must stay minimal. */
+export const MAX_NAV_ENRICH_URLS = 3;
 
 /** Flagship /in/ profile URL — no subroutes, https, www host only. */
 export const ENRICH_URL_RE = /^https:\/\/www\.linkedin\.com\/in\/[^/]+\/?$/;
+
+/**
+ * Extract the candidate's /in/<slug> path ("…/in/jane-doe/" → "/in/jane-doe")
+ * from a flagship URL. Nav-first enrichment uses it to find that person's
+ * anchor on the search results page. Returns null on any mismatch.
+ */
+export function candidateSlugFromUrl(url: string): string | null {
+  if (!ENRICH_URL_RE.test(url)) return null;
+  return url.slice("https://www.linkedin.com".length).replace(/\/+$/, "");
+}
+
+/**
+ * Validate the optional enrich `search_name` body param (nav-first mode
+ * selector). Absent/null → null (legacy mode). A present-but-invalid value
+ * (non-string, or trim ≠ 2-200 chars) returns "" so callers reject with 400.
+ */
+export function parseSearchName(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (trimmed.length < 2 || trimmed.length > 200) return "";
+  return trimmed;
+}
+
+/** True when the current page URL is a LinkedIn risk/auth wall. */
+export function isRiskWall(pageUrl: string): boolean {
+  return /\/login|\/authwall|\/checkpoint|\/uas\//.test(pageUrl);
+}
+
+/** True when a navigation error is the redirect wall (wall-equivalent). */
+export function isRedirectWallError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /ERR_TOO_MANY_REDIRECTS/i.test(msg);
+}
 
 /**
  * Validate the optional lookup `pages` body param.

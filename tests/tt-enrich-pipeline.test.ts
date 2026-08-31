@@ -19,6 +19,10 @@ import {
   MAX_CANDIDATES,
   MAX_ENRICH_URLS,
   ENRICH_URL_RE,
+  parseSearchName,
+  isRiskWall,
+  isRedirectWallError,
+  candidateSlugFromUrl,
 } from "../lib/tt/params.ts";
 import { parseHeadline } from "../lib/linkedin/headline.ts";
 
@@ -100,6 +104,58 @@ test("enrich urls: rejects non-/in/ and malformed URLs", () => {
 function good() {
   return "https://www.linkedin.com/in/valid-user";
 }
+
+// ─── search_name validation (nav-first selector, POST /api/tt/enrich body) ──
+
+test("search_name: absent/null → null (legacy mode)", () => {
+  assert.equal(parseSearchName(undefined), null);
+  assert.equal(parseSearchName(null), null);
+});
+
+test("search_name: accepts valid trimmed names (2-200 chars)", () => {
+  assert.equal(parseSearchName("  Isaac Meek  "), "Isaac Meek");
+  assert.equal(parseSearchName("A".repeat(200)), "A".repeat(200));
+  assert.equal(parseSearchName("Jo"), "Jo");
+});
+
+test("search_name: rejects invalid values (present-but-invalid → empty-string sentinel)", () => {
+  assert.equal(parseSearchName(""), "");       // empty after trim
+  assert.equal(parseSearchName("   "), "");    // whitespace only
+  assert.equal(parseSearchName("x"), "");      // 1 char
+  assert.equal(parseSearchName("A".repeat(201)), ""); // over 200
+  assert.equal(parseSearchName(42), "");       // non-string
+  assert.equal(parseSearchName(true), "");     // non-string
+});
+
+// ─── risk-wall detection (nav-first + legacy stop-on-wall) ───────────────
+
+test("isRiskWall: matches login/authwall/checkpoint/uas URLs", () => {
+  assert.ok(isRiskWall("https://www.linkedin.com/authwall?trk=guest_homepage-basic_nav-header-signin"));
+  assert.ok(isRiskWall("https://www.linkedin.com/uas/login"));
+  assert.ok(isRiskWall("https://www.linkedin.com/checkpoint/challenge/verify"));
+  assert.ok(isRiskWall("https://www.linkedin.com/login/fromgoogleauth"));
+});
+
+test("isRiskWall: passes search + profile URLs", () => {
+  assert.ok(!isRiskWall("https://www.linkedin.com/search/results/all/?keywords=Isaac+Meek"));
+  assert.ok(!isRiskWall("https://www.linkedin.com/in/isaac-meek/"));
+});
+
+test("isRedirectWallError: matches ERR_TOO_MANY_REDIRECTS only", () => {
+  assert.ok(isRedirectWallError(new Error("net::ERR_TOO_MANY_REDIRECTS at https://www.linkedin.com")));
+  assert.ok(isRedirectWallError("net::ERR_TOO_MANY_REDIRECTS"));
+  assert.ok(!isRedirectWallError(new Error("net::ERR_CONNECTION_REFUSED")));
+  assert.ok(!isRedirectWallError(null));
+});
+
+// ─── /in/<slug> extraction (anchor matching on the search results page) ──
+
+test("candidateSlugFromUrl: extracts /in/<slug> paths", () => {
+  assert.equal(candidateSlugFromUrl("https://www.linkedin.com/in/jane-doe/"), "/in/jane-doe");
+  assert.equal(candidateSlugFromUrl("https://www.linkedin.com/in/david-andrews-0868a2132"), "/in/david-andrews-0868a2132");
+  assert.equal(candidateSlugFromUrl("https://www.linkedin.com/company/trust-tai"), null);
+  assert.equal(candidateSlugFromUrl("not a url"), null);
+});
 
 // ─── lookup candidate dedupe (merged across search pages) ────────────────────
 

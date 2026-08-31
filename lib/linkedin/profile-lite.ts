@@ -38,15 +38,26 @@ const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 /** Connection-count noise ("500+ connections") that trails the location line. */
 const CONNECTIONS_RE = /[\d.,]+\+?\s*connections?\b/i;
 
-export async function scrapeProfileLite(page: Page, url: string): Promise<ProfileLite> {
+const emptyProfile = (url: string): ProfileLite => ({ url, full_name: null, headline: null, company: null, title: null, location: null });
+
+/**
+ * Navigate to a /in/ URL with the humanized wait (goto half of
+ * scrapeProfileLite). Split out so nav-first enrichment can click into a
+ * profile and reuse the extraction without a redundant cold goto.
+ */
+export async function gotoProfileLite(page: Page, url: string): Promise<void> {
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForTimeout(3000 + Math.random() * 2000);
+}
 
-  const empty: ProfileLite = { url, full_name: null, headline: null, company: null, title: null, location: null };
-
-  // Auth/challenge walls surface as a login/challenge URL — nothing to extract.
-  if (/\/login|\/authwall|\/checkpoint|\/uas\//.test(page.url())) return empty;
-
+/**
+ * Extract the top card from the CURRENT page state (extraction half of
+ * scrapeProfileLite). `url` is stamped on the result — nav-first callers pass
+ * the navigated page's canonical URL, not the original input URL.
+ * NEVER throws on DOM misses — partial extraction returns nulls.
+ */
+export async function extractProfileLite(page: Page, url: string): Promise<ProfileLite> {
+  const empty = emptyProfile(url);
   const topCard = page.locator("main section").filter({ has: page.locator("h1") }).first();
 
   // --- name: h1 in the top card (legacy pv-top-card h1 first) ---
@@ -104,4 +115,19 @@ export async function scrapeProfileLite(page: Page, url: string): Promise<Profil
   const { company, title } = parseHeadline(headline);
 
   return { url, full_name, headline, company, title, location };
+}
+
+/**
+ * Navigate-then-extract: the original scrapeProfileLite contract (cold goto
+ * to a /in/ URL, humanized wait, structural top-card extraction). Legacy
+ * enrichment mode keeps this; nav-first uses gotoProfileLite-equivalent
+ * navigation (clicks) plus extractProfileLite on the navigated page.
+ */
+export async function scrapeProfileLite(page: Page, url: string): Promise<ProfileLite> {
+  await gotoProfileLite(page, url);
+
+  // Auth/challenge walls surface as a login/challenge URL — nothing to extract.
+  if (/\/login|\/authwall|\/checkpoint|\/uas\//.test(page.url())) return emptyProfile(url);
+
+  return extractProfileLite(page, url);
 }
