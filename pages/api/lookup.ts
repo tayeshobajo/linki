@@ -56,7 +56,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const allCandidates: LookupCandidate[] = [];
     let resultCount: string | null = null;
     for (let pageNum = 1; pageNum <= pages; pageNum += 1) {
-    await page.goto(SEARCH_URL(keywords) + (pageNum > 1 ? `&page=${pageNum}` : ""), { waitUntil: "domcontentloaded", timeout: 30000 });
+    try {
+      await page.goto(SEARCH_URL(keywords) + (pageNum > 1 ? `&page=${pageNum}` : ""), { waitUntil: "domcontentloaded", timeout: 30000 });
+    } catch (gotoErr) {
+      // 2026-08-31: a later page failing (typically the redirect wall) must
+      // NOT discard candidates already captured from earlier pages — partial
+      // truth beats a 500. First page failing is a genuine failure: rethrow.
+      if (pageNum === 1) throw gotoErr;
+      console.warn(`[lookup] page ${pageNum} failed after ${allCandidates.length} candidates captured; returning partial set`);
+      break;
+    }
     await page.waitForTimeout(4000);
     // Wait for result content; tolerate absence (zero results) without failing.
     try {
@@ -202,7 +211,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       // Humanized gap between search-page loads (session teardown gap already
       // serializes page reuse; this adds inter-navigation pacing).
-      if (pageNum < pages) await page.waitForTimeout(2000 + Math.random() * 1500);
+      // 2026-08-31: raised from 2-3.5s to 8-15s — page 3 of a 3-page lookup
+      // tripped LinkedIn's redirect wall at the old pace (ground truth: pages
+      // 1-2 loaded 71+50 anchors, page 3 ERR_TOO_MANY_REDIRECTS, twice).
+      if (pageNum < pages) await page.waitForTimeout(8000 + Math.random() * 7000);
     }
 
     // Merge-dedupe by linkedin_url, keep first occurrence (earliest page +
